@@ -1,0 +1,288 @@
+import info.solidsoft.gradle.pitest.PitestTask
+defaultTasks 'explain'
+
+group 'org.autotest'
+version '1.0-SNAPSHOT'
+
+apply plugin: 'java'
+apply plugin: 'jacoco'
+apply plugin: 'info.solidsoft.pitest'
+
+sourceCompatibility = 1.8
+project.buildDir = 'build/out'
+
+// Properties
+ext {
+	randoopPath = 'dependencies/randoop.jar'
+	evosuitePath = 'dependencies/evosuite.jar'
+	coverageReports = "$buildDir/reports/covfefe" 
+	mutationReports = "$buildDir/reports/pitest" 
+	generatedDataPath = 'generated-data.csv'
+	classListPath = 'classList'
+	classesUnderTest = ['collections.comparators.FixedOrderComparator',
+						'collections.iterators.FilterIterator',
+						'collections.map.PredicatedMap', 'math.genetics.ListPopulation']
+	populationClassList = ['math.genetics.ElitisticListPopulation', classesUnderTest[3]]
+	amountOfTests = project.hasProperty('testSuites') ? (testSuites as int) : 2	
+	budget = project.hasProperty('budgetTime') ? (budgetTime as int) : (int) (0.12 * 60);
+}
+
+buildscript {
+	repositories { mavenCentral() }
+	dependencies {
+		classpath group:'info.solidsoft.gradle.pitest', name:'gradle-pitest-plugin', version:'1.1.11'
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+    testCompile group: 'junit', name: 'junit', version: '4.11'
+	compile group:'info.solidsoft.gradle.pitest', name:'gradle-pitest-plugin', version:'1.1.11'
+	compile files('dependencies/evosuite.jar')
+}
+
+
+jacoco {
+    toolVersion = "0.7.6.201602180812"
+}
+
+task explain {
+	doFirst{
+	println ''' 
+	To generate all tests, use "gradle generateTests"
+	To run all generated tests, use "gradle runAllTests"
+	To create coverage reports for the generated tests, use "gradle allCoverages"
+	To create mutation reports for the generated tests, use "gradle allMutations"
+	To create a csv file with coverage information for the tests, use "gradle exportCSV"
+	To clean up generated files and tests, use "gradle cleanUp"
+		*Please note that some of these tasks depend on a previous task. 
+		i.e: generateTests must be called before runAllTests	
+	
+	Several convenience methods are available and can be listed by using "gradle tasks"
+
+	Available parameters:
+		-PbudgetTime=X    Time spent creating tests 
+		-PtestSuites=X    Amount of test suites to generate for each class 
+
+	Examples:
+		Generate a csv with information for 10 tests suites, using 2 minutes as a budget
+			gradle generateTests runAllTests allCoverages allMutations exportCSV -PbudgetTime=120 -PtestSuites=10
+		
+		Generate and measure only randoop tests
+			gradle randoop runRandoopTests randoopCoverage randoopMutation exportCSV
+		'''
+	}
+}
+
+// Delete created resources
+task cleanUp(dependsOn: clean){
+	doLast{
+		delete classListPath
+		new File('src/evosuite/').deleteDir()
+		new File('src/randoop/').deleteDir()
+		new File(buildDir.toString()).deleteDir()
+		delete 'evosuite-report/statistics.csv', 'evosuite-report'
+		delete generatedDataPath
+	}
+}
+
+// Create necessary files and directories
+task setUp(dependsOn: [cleanUp, compileJava]) {
+	doLast {
+		def classList = new File(classListPath)
+		classList.createNewFile()
+		classList.text = populationClassList.join('\n')
+	}
+}
+
+// Generate $amountOfTests Randoop tests, using $budget time
+task randoop(dependsOn: setUp) {
+	doFirst { println 'Starting randoop' }
+
+	amountOfTests.times { i -> 
+		classesUnderTest.each { c ->
+			doLast { 
+				def className = getClassName(c)
+				javaexec {
+					main = "randoop.main.Main" 
+	  				classpath = files("$randoopPath:$buildDir/classes/main")
+					def classes = c == classesUnderTest[3] ? "--classlist=$classListPath" : "--testclass=$c" 
+	  				args = ['gentests', classes, "--timelimit=$budget", '--noprogressdisplay',
+							"--error-test-basename=Error_$className", "--regression-test-basename=Ok_$className", 
+							"--junit-output-dir=src/randoop/$i/$className", '--testsperfile=9999']
+				}
+				println "Created test suite number $i for class $className"
+			}
+		}
+	}
+}
+
+// Get simple class name from qualified name
+String getClassName(String qualifiedName) {
+	return qualifiedName.split(/\./)[-1]
+}
+
+// Generate $amountOfTests Evosuite tests, using $budget time
+task evosuite(dependsOn: setUp) {
+	amountOfTests.times { i -> 
+		classesUnderTest.each { c ->
+			doLast { 
+				javaexec {
+					main = '-jar'
+	  				args = [evosuitePath, '-projectCP', "$buildDir/classes/main", '-class', c,
+							'-Dno_runtime_dependency=true', "-Dsearch_budget=$budget", 
+							"-Dtest_dir=src/evosuite/$i/${getClassName(c)}"]
+				}
+			}
+		}
+	}
+}
+
+// Conveniency task to avoid calling multiple tasks
+task generateTests(dependsOn: [randoop,evosuite])
+
+// Dynamically generate $amountOfTests tasks to run the test suites created by randoop and evosuite 
+// Dynamically generate $amountOfTests tasks to create coverage reports for said tasks
+// In order to avoid classpath conflicts, and have separate coverage for each test suite, 
+// each test suite is run and reported in a different task
+(amountOfTests * 2).times { i ->
+
+	String tool = i < amountOfTests ? "randoop" : "evosuite"
+	if (i >= amountOfTests) i -= amountOfTests
+
+	// Create separate sourceSets for each testsuite, so each has its own classpath
+	sourceSets.create("$tool$i") {
+		output.classesDir = "$buildDir/classes/$tool/$i/"
+		output.resourcesDir = "$buildDir/classes/$tool/$i/"
+		compileClasspath +=  sourceSets.main.output + sourceSets.test.output
+		runtimeClasspath +=  sourceSets.main.output + sourceSets.test.output
+		java.srcDir "src/$tool/$i"
+	}
+
+	// Define test dependencies for each sourceSet 
+	configurations."$tool${i}Compile".extendsFrom configurations.testCompile
+	configurations."$tool${i}Runtime".extendsFrom configurations.testRuntime
+
+	// Generate a separate task to run each test suite
+	task "${tool}Test$i"(dependsOn: "$tool${i}Classes", type: Test){
+		jacoco {
+			// Configure jacoco output for later report creation
+        	append = false
+        	destinationFile = file("$buildDir/jacoco/${tool}Test${i}.exec")
+        	classDumpDir = file("$buildDir/jacoco/classpathDumps/${tool}Test${i}")
+	    }
+		testClassesDir = sourceSets."$tool$i".output.classesDir
+		classpath = sourceSets."$tool$i".runtimeClasspath
+		ignoreFailures = true
+		outputs.upToDateWhen{ false }
+		doFirst{
+			println "----Running $tool test suite number: $i"
+		}
+	}
+
+	// Generate a jacoco task to report coverage for each test suite execution
+	task "${tool}Coverage$i"(dependsOn: "${tool}Test$i", type: JacocoReport){
+		reports {
+			csv.enabled true
+			xml.enabled false
+			html.enabled false
+       		csv.destination "$coverageReports/${tool}${i}.csv"
+		}
+		executionData file("$buildDir/jacoco/${tool}Test${i}.exec")
+		sourceSets sourceSets.main
+	}
+
+	// Generate a pitest mutation task for each test suite
+	task "${tool}Pitest$i"(type: PitestTask) {
+		pitest { // Specify test suite to run
+			testSourceSets = [sourceSets."$tool$i"]	
+		}
+		// Copy settings for default pitest task
+		def defaultTask = tasks.findByName("pitest")
+		mutableCodePaths = defaultTask.mutableCodePaths
+		taskClasspath = defaultTask.taskClasspath
+		launchClasspath = defaultTask.launchClasspath
+		defaultFileForHistoryDate = defaultTask.defaultFileForHistoryDate
+		sourceDirs = defaultTask.sourceDirs
+		// Specify classes to mutate, as well as tests to run and report output directory
+		targetTests = ['*']
+		targetClasses = classesUnderTest
+		reportDir = new File("$mutationReports/$tool$i")
+		excludedClasses = ['Error*'] // Ignore randoop tests known to cause exceptions
+		outputFormats = ['CSV'] 
+		timestampedReports = false
+	}
+} 
+
+// Convenience task to run all generated test tasks
+task runRandoopTests(dependsOn: (0..amountOfTests-1).collect{ "randoopTest$it" }) 
+task runEvosuiteTests(dependsOn: (0..amountOfTests-1).collect{ "evosuiteTest$it" }) 
+task runAllTests(dependsOn: (0..amountOfTests-1).collectMany{["randoopTest$it", "evosuiteTest$it"]}) 
+
+// Convenience task to run all generated coverage tasks (coverage tasks depend on test tasks)
+task randoopCoverage(dependsOn: (0..amountOfTests-1).collect(["runRandoopTests"]){"randoopCoverage$it"}) 
+task evosuiteCoverage(dependsOn: (0..amountOfTests-1).collect(["runEvosuiteTests"]){"evosuiteCoverage$it"}) 
+task allCoverages(dependsOn: [randoopCoverage, evosuiteCoverage]) 
+
+// Convenience task to run all generated mutation tasks 
+task randoopMutation(dependsOn: (0..amountOfTests-1).collect{"randoopPitest$it"}) 
+task evosuiteMutation(dependsOn: (0..amountOfTests-1).collect{"evosuitePitest$it"}) 
+task allMutations(dependsOn: [randoopMutation, evosuiteMutation]) 
+
+// Create a csv file with values for className, Tool, line coverage, branch coverage, mutation score 
+task exportCSV {
+ 	// data matrix of size: testSuites * numberOfTools * numberOfClasses x featuresToMeasure
+	def data = new String[amountOfTests * 2 * classesUnderTest.size()][5]
+	doFirst {
+		[(0..amountOfTests-1), ['randoop','evosuite']].combinations().each{ i, tool ->
+			def offset = tool == 'evosuite' ? amountOfTests*classesUnderTest.size() : 0
+			def coverage = new File("$coverageReports/${tool}${i}.csv")
+			def mutations = new File("$mutationReports/${tool}${i}/mutations.csv")
+			if (coverage.exists())
+				getCoverageInformationForFile(data, coverage, offset, i, tool)
+			if (mutations.exists())
+				getMutationInformationForFile(data, mutations, offset, i, tool)
+		}
+	}
+	doLast {
+		delete generatedDataPath
+		def output = new File(generatedDataPath)
+		data.each { row ->
+			if (row[0] != null)
+				output << row.join(',') << '\n'
+		}
+		println "Finished exporting data to: $output"
+	}
+}
+
+def getCoverageInformationForFile(def data, File file,int offset, int i, String tool) {
+	file.splitEachLine(',') { dataRow ->
+		// find class position inside $classesUnderTest array
+		int classIndex  = classesUnderTest.collect{getClassName(it)}.findIndexOf{ it == dataRow[2]} 
+		if (classIndex != -1) { // if it's a class under test
+			def index = offset + amountOfTests*classIndex + i
+			data[index][0] = dataRow[2] // class name
+			data[index][1] = tool // tool name
+			double lineCvg = (dataRow[8] as double) / ((dataRow[7] as int) + (dataRow[8] as int)) ///
+			data[index][2] = lineCvg.round(2) // Line coverage
+			double branchCvg = (dataRow[6] as double) / ((dataRow[5] as int) + (dataRow[6] as int)) ///
+			data[index][3] = branchCvg.round(2) // branch coverage
+		}
+	}
+}
+
+def getMutationInformationForFile(def data, File file,int offset, int i, String tool) {
+	def mutationData = [:].withDefault{ [] } // map with empty lists
+	file.splitEachLine(',') { dataRow -> 
+		mutationData[dataRow[1]] << dataRow[5] // load map with mutant status 
+	}
+	mutationData.each { className, mutants ->
+		def classIndex = classesUnderTest.findIndexOf{it == className}
+		def index = offset + amountOfTests*classIndex + i
+		def mutationScore = mutants.count("KILLED") / (mutants.size() as double) /// 
+		data[index][4] = mutationScore.round(2) // Mutation score
+	}	
+}
