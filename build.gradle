@@ -172,7 +172,6 @@ task generateTests(dependsOn: [randoop,evosuite])
 			// Configure jacoco output for later report creation
         	append = false
         	destinationFile = file("$buildDir/jacoco/${tool}Test${i}.exec")
-        	classDumpDir = file("$buildDir/jacoco/classpathDumps/${tool}Test${i}")
 	    }
 		testClassesDir = sourceSets."$tool$i".output.classesDir
 		classpath = sourceSets."$tool$i".runtimeClasspath

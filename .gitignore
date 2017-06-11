@@ -1,0 +1,7 @@
+build/*
+classList
+generated-data.csv
+src/test/*
+src/randoop/*
+src/evosuite/*
+evosuite-report/*
