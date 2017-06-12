@@ -24,7 +24,7 @@ ext {
 						'collections.iterators.FilterIterator',
 						'collections.map.PredicatedMap', 'math.genetics.ListPopulation']
 	populationClassList = ['math.genetics.ElitisticListPopulation', classesUnderTest[3]]
-	predicatedClassList = ['collections.PredicateUtils', classesUnderTest[2]]
+	predicatedClassList = ['collections.map.DefaultedMap', 'collections.PredicateUtils', classesUnderTest[2]]
 	amountOfTests = project.hasProperty('testSuites') ? (testSuites as int) : 2	
 	budget = project.hasProperty('budgetTime') ? (budgetTime as int) : (int) (0.12 * 60);
 }
@@ -95,7 +95,7 @@ task cleanUp(dependsOn: clean){
 // Create necessary files and directories
 task setUp(dependsOn: [cleanUp, compileJava]) {
 	doLast {
-		createFile(classListPath, populationClassList)
+		createFile(listClassListPath, populationClassList)
 		createFile(mapClassListPath, predicatedClassList)
 	}
 }
@@ -282,7 +282,7 @@ def getCoverageInformationForFile(def data, File file,int offset, int i, String 
 		int classIndex  = classesUnderTest.collect{getClassName(it)}.findIndexOf{ it == dataRow[2]} 
 		if (classIndex != -1) { // if it's a class under test
 			def index = offset + amountOfTests*classIndex + i
-			data[index][0] = dataRow[2] // class name
+			data[index][0] = classesUnderTest[classIndex] // class name
 			data[index][1] = tool // tool name
 			double lineCvg = (dataRow[8] as double) / ((dataRow[7] as int) + (dataRow[8] as int)) ///
 			data[index][2] = lineCvg.round(2) // Line coverage
