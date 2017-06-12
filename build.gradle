@@ -18,11 +18,13 @@ ext {
 	coverageReports = "$buildDir/reports/covfefe" 
 	mutationReports = "$buildDir/reports/pitest" 
 	generatedDataPath = 'generated-data.csv'
-	classListPath = 'classList'
+	listClassListPath = 'listPopulationClassList'
+	mapClassListPath = 'predicatedMapClassList'
 	classesUnderTest = ['collections.comparators.FixedOrderComparator',
 						'collections.iterators.FilterIterator',
 						'collections.map.PredicatedMap', 'math.genetics.ListPopulation']
 	populationClassList = ['math.genetics.ElitisticListPopulation', classesUnderTest[3]]
+	predicatedClassList = ['collections.PredicateUtils', classesUnderTest[2]]
 	amountOfTests = project.hasProperty('testSuites') ? (testSuites as int) : 2	
 	budget = project.hasProperty('budgetTime') ? (budgetTime as int) : (int) (0.12 * 60);
 }
@@ -80,7 +82,8 @@ task explain {
 // Delete created resources
 task cleanUp(dependsOn: clean){
 	doLast{
-		delete classListPath
+		delete listClassListPath
+		delete mapClassListPath
 		new File('src/evosuite/').deleteDir()
 		new File('src/randoop/').deleteDir()
 		new File(buildDir.toString()).deleteDir()
@@ -92,10 +95,15 @@ task cleanUp(dependsOn: clean){
 // Create necessary files and directories
 task setUp(dependsOn: [cleanUp, compileJava]) {
 	doLast {
-		def classList = new File(classListPath)
-		classList.createNewFile()
-		classList.text = populationClassList.join('\n')
+		createFile(classListPath, populationClassList)
+		createFile(mapClassListPath, predicatedClassList)
 	}
+}
+
+def createFile(String path, def contents) {
+	def file = new File(path)
+	file.createNewFile()
+	file.text = contents.join('\n')
 }
 
 // Generate $amountOfTests Randoop tests, using $budget time
@@ -109,7 +117,7 @@ task randoop(dependsOn: setUp) {
 				javaexec {
 					main = "randoop.main.Main" 
 	  				classpath = files("$randoopPath:$buildDir/classes/main")
-					def classes = c == classesUnderTest[3] ? "--classlist=$classListPath" : "--testclass=$c" 
+					def classes = getClassListFor(c)
 	  				args = ['gentests', classes, "--timelimit=$budget", '--noprogressdisplay',
 							"--error-test-basename=Error_$className", "--regression-test-basename=Ok_$className", 
 							"--junit-output-dir=src/randoop/$i/$className", '--testsperfile=9999']
@@ -117,6 +125,17 @@ task randoop(dependsOn: setUp) {
 				println "Created test suite number $i for class $className"
 			}
 		}
+	}
+}
+
+String getClassListFor(String className) {
+	switch(className) {
+		case classesUnderTest[2]:
+			return "--classlist=$mapClassListPath"
+		case classesUnderTest[3]:
+			return "--classlist=$listClassListPath"
+		default:
+			return "--testclass=$className"
 	}
 }
 
